@@ -115,10 +115,22 @@ async function processDiffAndCommit(diff: string) {
 
     spinner.stop();
 
+    // Check if README update is needed
+    const shouldCheckReadme = await shouldUpdateReadme(diff);
+    let readmeUpdated = false;
+
+    if (shouldCheckReadme) {
+      readmeUpdated = await handleReadmeUpdate(diff, model);
+    }
+
     // Display Result
     console.log("\n--------------------------------------------------");
     console.log("\x1b[36m%s\x1b[0m", generatedMessage); // Cyan color
-    console.log("--------------------------------------------------\n");
+    console.log("--------------------------------------------------");
+    if (readmeUpdated) {
+      console.log("\x1b[32m%s\x1b[0m", "✓ README.md updated"); // Green color
+    }
+    console.log("");
 
     // Interactive Menu (Single Letter)
     const answer = await inquirer.prompt([
@@ -153,6 +165,131 @@ async function processDiffAndCommit(diff: string) {
   } catch (error: any) {
     spinner.stop();
     console.error("\n❌ Error:", error.message || error);
+  }
+}
+
+// Check if README should be updated based on the diff
+async function shouldUpdateReadme(diff: string): Promise<boolean> {
+  // Skip if README.md itself is being modified
+  if (diff.includes('diff --git a/README.md') || diff.includes('diff --git b/README.md')) {
+    return false;
+  }
+
+  // Check for significant code changes (new features, API changes, etc.)
+  const significantPatterns = [
+    /^[+].*function\s+/m,      // New functions
+    /^[+].*class\s+/m,         // New classes
+    /^[+].*export\s+/m,        // New exports
+    /^[+].*interface\s+/m,     // New interfaces
+    /^[+].*type\s+\w+\s*=/m,   // New types
+    /^[+].*const\s+\w+.*=.*require/m, // New dependencies
+    /^[+].*import.*from/m,     // New imports (potential new features)
+  ];
+
+  // Only suggest README update if substantial code added
+  const addedLines = diff.split('\n').filter(line => line.startsWith('+')).length;
+  if (addedLines < 10) return false;
+
+  return significantPatterns.some(pattern => pattern.test(diff));
+}
+
+// Handle README.md update with Gemini
+async function handleReadmeUpdate(diff: string, model: any): Promise<boolean> {
+  try {
+    // Ask user first
+    const answer = await inquirer.prompt([
+      {
+        type: "confirm",
+        name: "updateReadme",
+        message: "Detected significant changes. Update README.md?",
+        default: true,
+      },
+    ]);
+
+    if (!answer.updateReadme) return false;
+
+    const spinner = ora("Analyzing README updates...").start();
+
+    // Read current README
+    let currentReadme = "";
+    try {
+      currentReadme = await Bun.file("README.md").text();
+    } catch {
+      currentReadme = "# Project\n\nNo README found.";
+    }
+
+    // Get project context from package.json
+    let packageInfo = "";
+    try {
+      const pkg = await Bun.file("package.json").json();
+      packageInfo = `Project: ${pkg.name || 'unknown'}\nDescription: ${pkg.description || 'N/A'}`;
+    } catch {
+      packageInfo = "No package.json found";
+    }
+
+    const readmePrompt = `
+You are a technical writer updating a README.md file.
+
+CURRENT README:
+${currentReadme}
+
+PROJECT INFO:
+${packageInfo}
+
+RECENT CODE CHANGES:
+${diff.slice(0, 20000)}
+
+TASK:
+Update the README.md to reflect these changes. Follow these rules:
+1. Preserve existing structure and formatting
+2. Update installation, usage, or features sections if relevant
+3. Add new features/commands if introduced in the diff
+4. Keep it concise and developer-friendly
+5. Return ONLY the updated README content (no explanations, no markdown code blocks)
+6. If no meaningful updates needed, return "NO_UPDATE_NEEDED"
+
+Return the complete updated README or "NO_UPDATE_NEEDED":`;
+
+    const result = await model.generateContent(readmePrompt);
+    let updatedReadme = result.response.text().trim();
+
+    // Clean up markdown code blocks if Gemini added them despite instructions
+    updatedReadme = updatedReadme.replace(/^```markdown\n?/gm, '').replace(/^```\n?/gm, '').trim();
+
+    spinner.stop();
+
+    if (updatedReadme === "NO_UPDATE_NEEDED" || updatedReadme === currentReadme) {
+      console.log("ℹ️  No significant README updates needed.");
+      return false;
+    }
+
+    // Show preview
+    console.log("\n--------------------------------------------------");
+    console.log("\x1b[33m%s\x1b[0m", "Proposed README.md changes:"); // Yellow
+    console.log("--------------------------------------------------");
+    console.log(updatedReadme.slice(0, 500) + (updatedReadme.length > 500 ? '...' : ''));
+    console.log("--------------------------------------------------\n");
+
+    const confirmAnswer = await inquirer.prompt([
+      {
+        type: "confirm",
+        name: "applyReadme",
+        message: "Apply these README changes?",
+        default: true,
+      },
+    ]);
+
+    if (confirmAnswer.applyReadme) {
+      await Bun.write("README.md", updatedReadme);
+      // Stage the README
+      execSync("git add README.md", { stdio: "ignore" });
+      return true;
+    }
+
+    return false;
+  } catch (error: any) {
+    console.error("\n⚠️  README update failed:", error.message);
+    return false;
   }
 }
 
