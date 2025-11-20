@@ -91,13 +91,11 @@ async function main() {
 }
 
 async function processDiffAndCommit(diff: string) {
+  const spinner = ora("Gemini is analyzing changes...").start();
+  
   try {
-
-    // Start Processing
-    const spinner = ora("Gemini 2.5 is analyzing changes...").start();
-
-    // Note: If 'gemini-2.5' is not yet active for your key, fallback to 'gemini-1.5-flash'
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5" });
+    // Use gemini-2.0-flash-exp (or gemini-1.5-flash for stable version)
+    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-exp" });
 
     const prompt = `
       You are an expert developer. 
@@ -127,17 +125,17 @@ async function processDiffAndCommit(diff: string) {
       {
         type: "expand",
         name: "action",
-        message: "Commit this?",
+        message: "What would you like to do? (Y)es, (E)dit, (C)ancel",
         choices: [
-          { key: "y", name: "Yes (commit)", value: "commit" },
-          { key: "e", name: "Edit message", value: "edit" },
-          { key: "c", name: "Cancel", value: "cancel" },
+          { key: "y", name: "Yes - Commit with this message", value: "commit" },
+          { key: "e", name: "Edit - Modify the message", value: "edit" },
+          { key: "c", name: "Cancel - Abort commit", value: "cancel" },
         ],
       },
     ]);
 
     if (answer.action === "commit") {
-      runCommit(generatedMessage);
+      await runCommit(generatedMessage);
     } else if (answer.action === "edit") {
       const editAnswer = await inquirer.prompt([
         {
@@ -147,17 +145,18 @@ async function processDiffAndCommit(diff: string) {
           default: generatedMessage,
         },
       ]);
-      runCommit(editAnswer.customMessage);
+      await runCommit(editAnswer.customMessage);
     } else {
       console.log("🚫 Operation cancelled.");
     }
 
   } catch (error: any) {
+    spinner.stop();
     console.error("\n❌ Error:", error.message || error);
   }
 }
 
-function runCommit(message: string) {
+async function runCommit(message: string) {
   // Using spawnSync for safe argument handling
   const result = spawnSync("git", ["commit", "-m", message], {
     stdio: "inherit",
@@ -165,6 +164,33 @@ function runCommit(message: string) {
 
   if (result.status === 0) {
     console.log("\n✅ Committed!");
+    
+    // Ask if user wants to push to GitHub
+    const pushAnswer = await inquirer.prompt([
+      {
+        type: "confirm",
+        name: "shouldPush",
+        message: "Would you like to push to GitHub?",
+        default: true,
+      },
+    ]);
+
+    if (pushAnswer.shouldPush) {
+      const pushSpinner = ora("Pushing to GitHub...").start();
+      try {
+        // Get current branch name
+        const branch = execSync("git rev-parse --abbrev-ref HEAD", {
+          encoding: "utf-8",
+        }).trim();
+
+        // Push to origin
+        execSync(`git push origin ${branch}`, { stdio: "inherit" });
+        pushSpinner.succeed("Successfully pushed to GitHub!");
+      } catch (error: any) {
+        pushSpinner.fail("Failed to push to GitHub");
+        console.error("❌ Error:", error.message);
+      }
+    }
   } else {
     console.log("\n❌ Failed.");
   }
