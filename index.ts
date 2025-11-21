@@ -90,7 +90,7 @@ async function setupApiKey(): Promise<string> {
    3. Click "Create API Key"
    4. Copy the key and paste it below
 `);
-    console.log("Added for git commit")
+    
     // Give user time to get the key
     const { ready } = await inquirer.prompt([
       {

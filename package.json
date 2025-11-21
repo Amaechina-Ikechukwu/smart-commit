@@ -1,11 +1,9 @@
 {
-  "name": "@amaechina-ikechukwu/smart-commit",
-  "version": "1.0.0",
+  "name": "smart-commit-ai",
+  "version": "1.0.3",
   "description": "AI-powered Git commit message generator using Google Gemini",
   "type": "module",
-  "bin": {
-    "smart-commit": "./dist/index.js"
-  },
+  "bin": "./dist/index.js",
   "main": "./dist/index.js",
   "files": [
     "dist",
