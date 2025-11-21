@@ -240,6 +240,25 @@ async function main() {
       ]);
 
       if (addAnswer.autoAdd) {
+        // Warning about sensitive files
+        console.log("\n\x1b[33m%s\x1b[0m", "⚠️  Important: Make sure sensitive files are in .gitignore");
+        console.log("\x1b[33m%s\x1b[0m", "   (API keys, .env files, credentials, etc.)");
+        console.log("");
+        
+        const { proceedWithAdd } = await inquirer.prompt([
+          {
+            type: "confirm",
+            name: "proceedWithAdd",
+            message: "Continue staging all changes?",
+            default: true,
+          },
+        ]);
+
+        if (!proceedWithAdd) {
+          console.log("Staging cancelled. Please review your files and run smart-commit again.");
+          return;
+        }
+
         try {
           const addSpinner = ora("Staging all changes...").start();
           execSync("git add *", { stdio: "ignore" });
@@ -399,7 +418,7 @@ async function handleReadmeUpdate(diff: string, model: any): Promise<boolean> {
     // Read current README
     let currentReadme = "";
     try {
-      currentReadme = await Bun.file("README.md").text();
+      currentReadme = await fs.promises.readFile("README.md", "utf-8");
     } catch {
       currentReadme = "# Project\n\nNo README found.";
     }
@@ -407,7 +426,7 @@ async function handleReadmeUpdate(diff: string, model: any): Promise<boolean> {
     // Get project context from package.json
     let packageInfo = "";
     try {
-      const pkg = await Bun.file("package.json").json();
+      const pkg = JSON.parse(await fs.promises.readFile("package.json", "utf-8"));
       packageInfo = `Project: ${pkg.name || 'unknown'}\nDescription: ${pkg.description || 'N/A'}`;
     } catch {
       packageInfo = "No package.json found";
@@ -466,7 +485,7 @@ Return the complete updated README or "NO_UPDATE_NEEDED":`;
     ]);
 
     if (confirmAnswer.applyReadme) {
-      await Bun.write("README.md", updatedReadme);
+      await fs.promises.writeFile("README.md", updatedReadme);
       // Stage the README
       execSync("git add README.md", { stdio: "ignore" });
       return true;
@@ -489,7 +508,7 @@ async function checkAndUpdateReadme() {
     // Read current README
     let currentReadme = "";
     try {
-      currentReadme = await Bun.file("README.md").text();
+      currentReadme = await fs.promises.readFile("README.md", "utf-8");
     } catch {
       spinner.fail("README.md not found");
       return;
@@ -498,12 +517,12 @@ async function checkAndUpdateReadme() {
     // Get current codebase snapshot
     const mainFiles = [];
     try {
-      const indexFile = await Bun.file("index.ts").text();
+      const indexFile = await fs.promises.readFile("index.ts", "utf-8");
       mainFiles.push(`index.ts:\n${indexFile.slice(0, 15000)}`);
     } catch {}
     
     try {
-      const pkg = await Bun.file("package.json").text();
+      const pkg = await fs.promises.readFile("package.json", "utf-8");
       mainFiles.push(`package.json:\n${pkg}`);
     } catch {}
 
@@ -562,7 +581,7 @@ Return ONLY the updated README content or "README_IS_ACCURATE" (no explanations,
     ]);
 
     if (answer.apply) {
-      await Bun.write("README.md", analysis);
+      await fs.promises.writeFile("README.md", analysis);
       console.log("\nREADME.md updated successfully!");
       
       const stageAnswer = await inquirer.prompt([
