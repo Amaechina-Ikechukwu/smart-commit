@@ -6,6 +6,9 @@ out
 dist
 *.tgz
 
+# build files
+*.d.ts
+
 # code coverage
 coverage
 *.lcov

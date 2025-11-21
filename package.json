@@ -1,18 +1,53 @@
 {
-  "name": "smart-commit",
-  "module": "index.ts",
+  "name": "@amaechina-ikechukwu/smart-commit",
+  "version": "1.0.0",
+  "description": "AI-powered Git commit message generator using Google Gemini",
   "type": "module",
-  "private": true,
+  "bin": {
+    "smart-commit": "./dist/index.js"
+  },
+  "main": "./dist/index.js",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build",
+    "start": "node dist/index.js"
+  },
+  "keywords": [
+    "git",
+    "commit",
+    "ai",
+    "gemini",
+    "cli",
+    "commit-message",
+    "automation"
+  ],
+  "author": "Amaechina Ikechukwu",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Amaechina-Ikechukwu/smart-commit"
+  },
+  "bugs": {
+    "url": "https://github.com/Amaechina-Ikechukwu/smart-commit/issues"
+  },
+  "homepage": "https://github.com/Amaechina-Ikechukwu/smart-commit#readme",
   "devDependencies": {
     "@types/bun": "latest",
-    "@types/inquirer": "^9.0.9"
-  },
-  "peerDependencies": {
-    "typescript": "^5"
+    "@types/inquirer": "^9.0.9",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.2"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
     "inquirer": "^13.0.1",
     "ora": "^9.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }

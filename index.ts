@@ -1,26 +1,212 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 import { GoogleGenerativeAI } from "@google/generative-ai";
-import { execSync, spawnSync } from "node:child_process"; // Bun supports node built-ins
+import { execSync, spawnSync } from "node:child_process";
 import inquirer from "inquirer";
 import ora from "ora";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import * as os from "node:os";
 
-// 1. Configuration (Bun loads .env automatically)
-const API_KEY = Bun.env.GEMINI_API_KEY;
+// 1. Configuration
+const CONFIG_DIR = path.join(os.homedir(), ".smart-commit");
+const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
 
-if (!API_KEY) {
-  console.error("❌ Error: GEMINI_API_KEY is missing from your .env file.");
-  process.exit(1);
+interface Config {
+  apiKey?: string;
+  hasSeenWelcome?: boolean;
 }
 
-const genAI = new GoogleGenerativeAI(API_KEY);
+// Read or initialize config
+function loadConfig(): Config {
+  try {
+    if (fs.existsSync(CONFIG_FILE)) {
+      const data = fs.readFileSync(CONFIG_FILE, "utf-8");
+      return JSON.parse(data);
+    }
+  } catch (error) {
+    // If config is corrupted, start fresh
+  }
+  return {};
+}
+
+// Save config securely (with restricted permissions)
+function saveConfig(config: Config): void {
+  try {
+    if (!fs.existsSync(CONFIG_DIR)) {
+      fs.mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
+    }
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), { mode: 0o600 });
+  } catch (error: any) {
+    console.error("Warning: Could not save config:", error.message);
+  }
+}
+
+// Display welcome message for first-time users
+function showWelcomeMessage(): void {
+  console.log(`
+${'='.repeat(70)}
+`);
+  console.log("\x1b[36m%s\x1b[0m", "  Welcome to smart-commit!");
+  console.log(`\n${'='.repeat(70)}`);
+  console.log(`
+  Smart-commit uses AI to generate meaningful commit messages from your
+  code changes, saving you time and improving your commit history.
+  
+  Features:
+     - AI-powered commit messages using Google's Gemini
+     - Automatic README.md updates when code changes
+     - Interactive commit review and editing
+     - Supports conventional commits format
+  
+  About the API Key:
+     - Google's Gemini AI offers a generous FREE tier
+     - No credit card required to get started
+     - 1,500 requests/day & 1M tokens/month
+     - Your key is stored securely on your machine
+     - Costs almost nothing even with heavy usage
+  
+${'='.repeat(70)}\n`);
+}
+
+// Interactive API key setup
+async function setupApiKey(): Promise<string> {
+  console.log("\x1b[33m%s\x1b[0m", "\nAPI Key Setup");
+  console.log("\nTo use smart-commit, you need a free Gemini API key.\n");
+  
+  const { shouldGetKey } = await inquirer.prompt([
+    {
+      type: "confirm",
+      name: "shouldGetKey",
+      message: "Would you like to get your free API key now?",
+      default: true,
+    },
+  ]);
+
+  if (shouldGetKey) {
+    console.log(`\nSteps to get your API key:
+
+   1. Visit: \x1b[36mhttps://aistudio.google.com/app/apikey\x1b[0m
+   2. Sign in with your Google account
+   3. Click "Create API Key"
+   4. Copy the key and paste it below
+`);
+    
+    // Give user time to get the key
+    const { ready } = await inquirer.prompt([
+      {
+        type: "confirm",
+        name: "ready",
+        message: "Have you obtained your API key?",
+        default: true,
+      },
+    ]);
+
+    if (!ready) {
+      console.log("\nNo problem! Run \x1b[36msmart-commit\x1b[0m again when you have your key.\n");
+      process.exit(0);
+    }
+  }
+
+  const { apiKey } = await inquirer.prompt([
+    {
+      type: "password",
+      name: "apiKey",
+      message: "Enter your Gemini API key:",
+      mask: "*",
+      validate: (input: string) => {
+        if (!input || input.trim().length === 0) {
+          return "API key cannot be empty";
+        }
+        if (input.trim().length < 20) {
+          return "API key seems too short. Please check and try again.";
+        }
+        return true;
+      },
+    },
+  ]);
+
+  // Test the API key
+  const spinner = ora("Validating API key...").start();
+  try {
+    const testAI = new GoogleGenerativeAI(apiKey.trim());
+    const model = testAI.getGenerativeModel({ model: "gemini-2.0-flash-exp" });
+    await model.generateContent("Say 'OK'");
+    spinner.succeed("API key is valid!");
+    return apiKey.trim();
+  } catch (error: any) {
+    spinner.fail("API key validation failed");
+    console.error("\nError:", error.message);
+    console.log("\nPlease check your API key and try again.\n");
+    process.exit(1);
+  }
+}
+
+// Initialize API key (from env, config, or setup)
+async function initializeApiKey(): Promise<string> {
+  // Priority 1: Environment variable (for CI/CD or advanced users)
+  const envKey = process.env.GEMINI_API_KEY;
+  if (envKey && envKey.trim()) {
+    return envKey.trim();
+  }
+
+  // Priority 2: Stored config file
+  const config = loadConfig();
+  
+  // Show welcome message for first-time users
+  if (!config.hasSeenWelcome) {
+    showWelcomeMessage();
+    config.hasSeenWelcome = true;
+    saveConfig(config);
+  }
+
+  if (config.apiKey) {
+    return config.apiKey;
+  }
+
+  // Priority 3: Interactive setup for new users
+  const apiKey = await setupApiKey();
+  config.apiKey = apiKey;
+  saveConfig(config);
+  
+  console.log("\nSetup complete! Your API key has been saved securely.\n");
+  return apiKey;
+}
+
+let genAI: GoogleGenerativeAI;
+
+// Parse CLI flags
+const args = process.argv.slice(2);
+const FORCE_README_UPDATE = args.includes('--update-readme') || args.includes('-r');
+const RESET_CONFIG = args.includes('--reset-key') || args.includes('--config');
 
 async function main() {
   try {
+    // Handle config reset
+    if (RESET_CONFIG) {
+      console.log("\nResetting API key configuration...\n");
+      const apiKey = await setupApiKey();
+      const config = loadConfig();
+      config.apiKey = apiKey;
+      saveConfig(config);
+      console.log("\nAPI key has been updated successfully!\n");
+      return;
+    }
+
+    // Initialize API key (interactive setup on first run)
+    const apiKey = await initializeApiKey();
+    genAI = new GoogleGenerativeAI(apiKey);
+
+    // Handle README-only update flag
+    if (FORCE_README_UPDATE) {
+      await checkAndUpdateReadme();
+      return;
+    }
+
     // 2. Verify Git Repo
     try {
       execSync("git rev-parse --is-inside-work-tree", { stdio: "ignore" });
     } catch {
-      console.error("❌ Error: This is not a git repository.");
+      console.error("Error: This is not a git repository.");
       return;
     }
 
@@ -42,7 +228,7 @@ async function main() {
     });
 
     if (!diff.trim()) {
-      console.log("⚠️  No staged changes found (excluding lockfiles).");
+      console.log("No staged changes found (excluding lockfiles).");
       
       const addAnswer = await inquirer.prompt([
         {
@@ -66,18 +252,18 @@ async function main() {
           });
           
           if (!newDiff.trim()) {
-            console.log("⚠️  Still no changes to commit.");
+            console.log("Still no changes to commit.");
             return;
           }
           
           // Continue with the newly staged changes
           return processDiffAndCommit(newDiff);
         } catch (error: any) {
-          console.error("❌ Error staging files:", error.message);
+          console.error("Error staging files:", error.message);
           return;
         }
       } else {
-        console.log("ℹ️  Please run 'git add' manually and try again.");
+        console.log("Please run 'git add' manually and try again.");
         return;
       }
     }
@@ -86,7 +272,7 @@ async function main() {
     await processDiffAndCommit(diff);
 
   } catch (error: any) {
-    console.error("\n❌ Error:", error.message || error);
+    console.error("\nError:", error.message || error);
   }
 }
 
@@ -128,7 +314,7 @@ async function processDiffAndCommit(diff: string) {
     console.log("\x1b[36m%s\x1b[0m", generatedMessage); // Cyan color
     console.log("--------------------------------------------------");
     if (readmeUpdated) {
-      console.log("\x1b[32m%s\x1b[0m", "✓ README.md updated"); // Green color
+      console.log("\x1b[32m%s\x1b[0m", "README.md updated"); // Green color
     }
     console.log("");
 
@@ -159,12 +345,12 @@ async function processDiffAndCommit(diff: string) {
       ]);
       await runCommit(editAnswer.customMessage);
     } else {
-      console.log("🚫 Operation cancelled.");
+      console.log("Operation cancelled.");
     }
 
   } catch (error: any) {
     spinner.stop();
-    console.error("\n❌ Error:", error.message || error);
+    console.error("\nError:", error.message || error);
   }
 }
 
@@ -259,7 +445,7 @@ Return the complete updated README or "NO_UPDATE_NEEDED":`;
     spinner.stop();
 
     if (updatedReadme === "NO_UPDATE_NEEDED" || updatedReadme === currentReadme) {
-      console.log("ℹ️  No significant README updates needed.");
+      console.log("No significant README updates needed.");
       return false;
     }
 
@@ -288,8 +474,118 @@ Return the complete updated README or "NO_UPDATE_NEEDED":`;
 
     return false;
   } catch (error: any) {
-    console.error("\n⚠️  README update failed:", error.message);
+    console.error("\nREADME update failed:", error.message);
     return false;
+  }
+}
+
+// Standalone README update checker
+async function checkAndUpdateReadme() {
+  const spinner = ora("Analyzing README alignment with codebase...").start();
+  
+  try {
+    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-exp" });
+
+    // Read current README
+    let currentReadme = "";
+    try {
+      currentReadme = await Bun.file("README.md").text();
+    } catch {
+      spinner.fail("README.md not found");
+      return;
+    }
+
+    // Get current codebase snapshot
+    const mainFiles = [];
+    try {
+      const indexFile = await Bun.file("index.ts").text();
+      mainFiles.push(`index.ts:\n${indexFile.slice(0, 15000)}`);
+    } catch {}
+    
+    try {
+      const pkg = await Bun.file("package.json").text();
+      mainFiles.push(`package.json:\n${pkg}`);
+    } catch {}
+
+    if (mainFiles.length === 0) {
+      spinner.fail("No code files found to analyze");
+      return;
+    }
+
+    const alignmentPrompt = `
+You are a technical documentation expert.
+
+CURRENT README.md:
+${currentReadme}
+
+CURRENT CODEBASE:
+${mainFiles.join('\n\n')}
+
+TASK:
+Analyze if the README accurately reflects the current codebase.
+Check for:
+1. Missing features/commands mentioned in code but not in README
+2. Outdated installation or usage instructions
+3. Missing dependencies or setup steps
+4. Incorrect or obsolete information
+
+If updates are needed, provide an updated README.
+If README is accurate, respond with "README_IS_ACCURATE"
+
+Return ONLY the updated README content or "README_IS_ACCURATE" (no explanations, no markdown code blocks):`;
+
+    const result = await model.generateContent(alignmentPrompt);
+    let analysis = result.response.text().trim();
+    analysis = analysis.replace(/^```markdown\n?/gm, '').replace(/^```\n?/gm, '').trim();
+
+    spinner.stop();
+
+    if (analysis === "README_IS_ACCURATE" || analysis === currentReadme) {
+      console.log("README.md is up-to-date with the codebase.");
+      return;
+    }
+
+    // Show proposed changes
+    console.log("\n" + "=".repeat(60));
+    console.log("\x1b[33m%s\x1b[0m", "README Updates Recommended:");
+    console.log("=".repeat(60));
+    console.log(analysis.slice(0, 800) + (analysis.length > 800 ? '...\n' : '\n'));
+    console.log("=".repeat(60) + "\n");
+
+    const answer = await inquirer.prompt([
+      {
+        type: "confirm",
+        name: "apply",
+        message: "Apply these README updates?",
+        default: true,
+      },
+    ]);
+
+    if (answer.apply) {
+      await Bun.write("README.md", analysis);
+      console.log("\nREADME.md updated successfully!");
+      
+      const stageAnswer = await inquirer.prompt([
+        {
+          type: "confirm",
+          name: "stage",
+          message: "Stage and commit README.md?",
+          default: true,
+        },
+      ]);
+
+      if (stageAnswer.stage) {
+        execSync("git add README.md", { stdio: "ignore" });
+        execSync('git commit -m "docs: update README.md"', { stdio: "inherit" });
+        console.log("Committed!");
+      }
+    } else {
+      console.log("README update cancelled.");
+    }
+
+  } catch (error: any) {
+    spinner.fail("Failed to analyze README");
+    console.error("Error:", error.message);
   }
 }
 
@@ -300,7 +596,7 @@ async function runCommit(message: string) {
   });
 
   if (result.status === 0) {
-    console.log("\n✅ Committed!");
+    console.log("\nCommitted!");
     
     // Ask if user wants to push to GitHub
     const pushAnswer = await inquirer.prompt([
@@ -325,11 +621,11 @@ async function runCommit(message: string) {
         pushSpinner.succeed("Successfully pushed to GitHub!");
       } catch (error: any) {
         pushSpinner.fail("Failed to push to GitHub");
-        console.error("❌ Error:", error.message);
+        console.error("Error:", error.message);
       }
     }
   } else {
-    console.log("\n❌ Failed.");
+    console.log("\nFailed.");
   }
 }
 
